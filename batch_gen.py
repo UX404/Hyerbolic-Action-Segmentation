@@ -17,6 +17,9 @@ class BatchGenerator(object):
         self.sample_rate = sample_rate
 
         self.timewarp_layer = TimeWarpLayer()
+    
+    def __len__(self):
+        return len(self.list_of_examples)
 
     def reset(self):
         self.index = 0
@@ -119,6 +122,64 @@ class BatchGenerator(object):
             mask[i, :, :np.shape(batch_target[i])[0]] = torch.ones(self.num_classes, np.shape(batch_target[i])[0])
 
         return batch_input_tensor, batch_target_tensor, mask, batch
+
+
+    '''def next_batch(self, batch_size, if_warp=False): # if_warp=True is a strong data augmentation. See grid_sampler.py for details.
+        batch = self.list_of_examples[self.index:self.index + batch_size]
+        batch_gts = self.gts[self.index:self.index + batch_size]
+        batch_features = self.features[self.index:self.index + batch_size]
+
+        self.index += batch_size
+
+        batch_input = []
+        batch_target = []
+        parents = []
+        children = []
+        for idx, vid in enumerate(batch):
+            features = np.load(batch_features[idx])
+            # print(batch_gts[idx], features.shape)
+            file_ptr = open(batch_gts[idx], 'r')
+            content = file_ptr.read().split('\n')[:-1]
+            classes = np.zeros(min(np.shape(features)[1], len(content)))
+            for i in range(len(classes)):
+                classes[i] = self.actions_dict[content[i]]
+
+            feature = features[:, ::self.sample_rate]
+            target = classes[::self.sample_rate]
+            
+            parent = []
+            child = []
+            for n in range(len(target[:-1])):
+                if target[n] == target[n+1]:
+                    parent.append(feature[:, n])
+                    child.append(feature[:, n+1])
+                # else:
+                #     print(n, target[n], target[n+1], target[n+2])
+            parent = np.stack(parent)
+            child = np.stack(child)
+            # print(parent.shape, child.shape)
+            batch_input.append(feature.T)
+            batch_target.append(target)
+            parents.append(parent)
+            children.append(child)
+
+        # length_of_sequences = list(map(len, batch_target))
+        # batch_input_tensor = torch.zeros(len(batch_input), np.shape(batch_input[0])[0], max(length_of_sequences), dtype=torch.float)  # bs, C_in, L_in
+        # batch_target_tensor = torch.ones(len(batch_input), max(length_of_sequences), dtype=torch.long) * (-100)
+        # mask = torch.zeros(len(batch_input), self.num_classes, max(length_of_sequences), dtype=torch.float)
+        # for i in range(len(batch_input)):
+        #     batch_input_tensor[i, :, :np.shape(batch_input[i])[1]] = torch.from_numpy(batch_input[i])
+        #     batch_target_tensor[i, :np.shape(batch_target[i])[0]] = torch.from_numpy(batch_target[i])
+        #     mask[i, :, :np.shape(batch_target[i])[0]] = torch.ones(self.num_classes, np.shape(batch_target[i])[0])
+        batch_input = torch.from_numpy(np.concatenate(batch_input))
+        batch_target = torch.from_numpy(np.concatenate(batch_target))
+        batch_parents = torch.from_numpy(np.concatenate(parents))
+        batch_children = torch.from_numpy(np.concatenate(children))
+        # print(batch_parents.shape, [a.shape for a in parents])
+        # print(batch_input_tensor.shape, batch_target_tensor, mask.shape, batch)
+
+        # return batch_input_tensor, batch_target_tensor, mask, batch
+        return batch_input, batch_target, batch_parents, batch_children, batch'''
 
 
 if __name__ == '__main__':

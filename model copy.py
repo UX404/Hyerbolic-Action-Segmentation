@@ -7,15 +7,6 @@ import copy
 import numpy as np
 import math
 
-import numpy as np
-import os
-import shutil
-from tqdm import tqdm
-from matplotlib import pyplot as plt
-from hyptorch.nn import *
-from hyptorch import pmath as pm
-from datetime import datetime
-
 from eval import segment_bars_with_confidence
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -310,15 +301,11 @@ class Decoder(nn.Module):
         return out, feature
     
 class MyTransformer(nn.Module):
-    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim, output_dim, num_classes, channel_masking_rate):
+    def __init__(self, num_decoders, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate):
         super(MyTransformer, self).__init__()
         self.encoder = Encoder(num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate, att_type='sliding_att', alpha=1)
         self.decoders = nn.ModuleList([copy.deepcopy(Decoder(num_layers, r1, r2, num_f_maps, num_classes, num_classes, att_type='sliding_att', alpha=exponential_descrease(s))) for s in range(num_decoders)]) # num_decoders
-        self.hypmlp = HypMlp(num_f_maps, output_dim)
-
-        self.loss1 = BinaryTreeLoss()
-        self.loss2 = NormLoss()
-        self.loss_crossen = CrossEn()
+        
         
     def forward(self, x, mask):
         out, feature = self.encoder(x, mask)
@@ -327,230 +314,61 @@ class MyTransformer(nn.Module):
         for decoder in self.decoders:
             out, feature = decoder(F.softmax(out, dim=1) * mask[:, 0:1, :], feature* mask[:, 0:1, :], mask)
             outputs = torch.cat((outputs, out.unsqueeze(0)), dim=0)
-        
-        # in the hyperbolic space
-        outputs = self.hypmlp(feature.transpose(2, 1)[0])
  
         return outputs
-    
-    '''def loss(self, parent, child, bz=4):
-        loss = []
-        for n in range(0, len(parent), bz):
-            parent_batch = parent[bz*n: bz*(n+1)]
-            child_batch = child[bz*n: bz*(n+1)]
-            # idx = np.random.choice(len(parent), bz)
-            # parent_batch = parent[idx]
-            # child_batch = child[idx]
-            batch_loss = self.loss1(parent_batch, child_batch) + self.loss2(parent_batch, child_batch)
-            # print('loss_binary', self.loss1(parent_batch, child_batch))
-            # print('loss_norm', self.loss2(parent_batch, child_batch))
-            if torch.isnan(batch_loss):
-                print('batch %d loss' % n, batch_loss)
-                break
-            loss.append(batch_loss)
-        return sum(loss) / len(loss)
-        # return self.loss1(parent[:bz], child[:bz]) + self.loss2(parent[:bz], child[:bz])'''
-
-    def loss(self, parent, child, features, target, bz=4):
-        loss_cos = []
-        loss_center = 0.
-        loss_norm = []
-        # print(parent.shape, child.shape, features.shape, target.shape)
-        # e.g. torch.Size([5537, 64]) torch.Size([5537, 64]) torch.Size([5558, 64]) torch.Size([5558])
-        
-        # cos
-        boarder = torch.argwhere(target != torch.cat([target[[-1]], target[:-1]]))
-        boarder = boarder.squeeze().cpu().tolist() + [len(target)]
-        for n in range(len(target) // (len(boarder)-1) + 1):
-            cross_idx_1 = []
-            cross_idx_2 = []
-            for n in range(len(boarder)-1):
-                cross_idx_1.append(np.random.choice(range(boarder[n], boarder[n+1])))
-                cross_idx_2.append(np.random.choice(range(boarder[n], boarder[n+1])))
-            score = torch.matmul(features[cross_idx_1], features[cross_idx_2].T)
-            batch_loss = self.loss_crossen(score)
-            loss_cos.append(batch_loss)
-        
-        # center
-        start_point_features_norm = features[boarder[:-1]].norm(dim=1)
-        loss_center = - start_point_features_norm.mean()
-
-        # norm
-        # for n in range(0, len(parent), bz):
-        #     parent_batch_norm = parent[bz*n: bz*(n+1)].norm(dim=1)
-        #     child_batch_norm = child[bz*n: bz*(n+1)].norm(dim=1)
-            # idx = np.random.choice(len(parent), bz)
-            # parent_batch_norm = parent[idx].norm(dim=1)
-            # child_batch_norm = child[idx].norm(dim=1)
-
-            # print(parent_batch_norm.shape, child_batch_norm.shape)
-            # torch.Size([4]) torch.Size([4])
-        for n in range(len(boarder)-1):
-            parent_batch_norm = parent[boarder[n]: boarder[n+1]].norm(dim=1)
-            child_batch_norm = child[boarder[n]: boarder[n+1]].norm(dim=1)
-            # print(len(parent_batch_norm))
-            score = - F.relu(child_batch_norm.repeat(len(child_batch_norm), 1) - parent_batch_norm.repeat(len(child_batch_norm), 1).T + 0.01)
-            batch_loss = self.loss_crossen(score)
-            if torch.isnan(batch_loss):
-                print('batch %d loss' % n, batch_loss)
-                break
-            loss_norm.append(batch_loss)
-
-        # print((sum(loss_cos) / len(loss_cos)), loss_center, (sum(loss_norm) / len(loss_norm)))
-
-        return (sum(loss_cos) / len(loss_cos)) + loss_center + (sum(loss_norm) / len(loss_norm))
-
-
-class HypMlp(nn.Module):
-    def __init__(self, input_dim, output_dim, act_layer=nn.GELU, drop=0.05):
-        super(HypMlp, self).__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.topoincare = ToPoincare(c=1)
-        self.hypfc1 = HypLinear(input_dim, input_dim, c=1)
-        self.hypfc2 = HypLinear(input_dim, input_dim, c=1)
-        self.hypfc3 = HypLinear(input_dim, output_dim, c=1)
-        self.act = act_layer()
-        self.drop = nn.Dropout(drop)
-
-    def forward(self, x):
-        x = self.topoincare(x)
-        x = self.hypfc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.hypfc2(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.hypfc3(x)
-        return x
-
-
-class CrossEn(nn.Module):
-    def __init__(self,):
-        super(CrossEn, self).__init__()
-
-    def forward(self, sim_matrix):
-        logpt = F.log_softmax(sim_matrix, dim=-1)
-        logpt = torch.diag(logpt)
-        nce_loss = -logpt
-        sim_loss = nce_loss.mean()
-        return sim_loss
-    
-
-class BinaryTreeLoss(nn.Module):
-    def __init__(self, c=1):
-        super(BinaryTreeLoss, self).__init__()
-        self.c = c
-
-    def forward(self, parent, child):
-        dis_matrix = pm.dist_matrix(child, parent, self.c)
-        logpt = F.log_softmax(-dis_matrix, dim=-1)
-        logpt = torch.diag(logpt)
-        nce_loss = -logpt
-        loss = nce_loss.mean()
-        return loss
-
-
-class NormLoss(nn.Module):
-    def __init__(self, c=1, alpha=1):
-        super(NormLoss, self).__init__()
-        self.c = c
-        self.alpha = alpha
-
-    def forward(self, parent, child):
-        child_norm = child.norm(dim=1)
-        parent_norm = parent.norm(dim=1)
-        score = - self.alpha * F.relu(child_norm - parent_norm + 0.01)
-        # score = - self.alpha * pm.dist_matrix(child, parent, self.c) * F.relu(child_norm - parent_norm + 0.01)
-        loss = score.mean()
-        return loss
 
     
 class Trainer:
-    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, output_dim, num_classes, channel_masking_rate):
-        self.model = MyTransformer(3, num_layers, r1, r2, num_f_maps, input_dim, output_dim, num_classes, channel_masking_rate)
-        # self.model = HypMlp(input_dim, 2)
+    def __init__(self, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate):
+        self.model = MyTransformer(3, num_layers, r1, r2, num_f_maps, input_dim, num_classes, channel_masking_rate)
         self.ce = nn.CrossEntropyLoss(ignore_index=-100)
 
         print('Model Size: ', sum(p.numel() for p in self.model.parameters()))
         self.mse = nn.MSELoss(reduction='none')
         self.num_classes = num_classes
-        
-        # visualize dir
-        self.dir = './visualize/breakfast_base64-16_StartCloseToCenter+SeparateSegments+Shuffle'
-        if os.path.exists('./' + self.dir):
-            shutil.rmtree('./' + self.dir)
-            os.makedirs('./' + self.dir)
-        else:
-            os.makedirs('./' + self.dir)
-        with open('./' + self.dir + '/log.txt', mode='w') as f:
-            f.write(str(datetime.now()) + '\n')
 
     def train(self, save_dir, batch_gen, num_epochs, batch_size, learning_rate, batch_gen_tst=None):
         self.model.train()
         self.model.to(device)
-        # self.model.load_state_dict(torch.load('/storage/rqshi/ASFormer/models_original/50salads/split_5/epoch-120.model'), strict=False)
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
         print('LR:{}'.format(learning_rate))
+        
         
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
         for epoch in range(num_epochs):
             epoch_loss = 0
-            # correct = 0
-            # total = 0
-            cnt = 0
+            correct = 0
+            total = 0
 
-            # while batch_gen.has_next():
-            for _ in tqdm(range(len(batch_gen))):
-            # for _ in tqdm(range(10)):
+            while batch_gen.has_next():
                 batch_input, batch_target, mask, vids = batch_gen.next_batch(batch_size, False)
                 batch_input, batch_target, mask = batch_input.to(device), batch_target.to(device), mask.to(device)
                 optimizer.zero_grad()
-                fs = self.model(batch_input, mask)
-                # print(fs.shape, batch_target.T.shape)
+                ps = self.model(batch_input, mask)
 
-                target = batch_target.T
-                ps_idx = (target == torch.cat((target[1:], target[[0]]))).squeeze()
-                cs_idx = (target == torch.cat((target[[-1]], target[:-1]))).squeeze()
-                
-                # for p, c, t in zip(ps_idx, cs_idx, target):
-                #     print(p, c, t)
-                # print(ps_idx.shape, cs_idx.shape, target.shapes)
-                # torch.Size([5558]) torch.Size([5558]) torch.Size([5558, 1])
-
-                ps = fs[ps_idx]
-                cs = fs[cs_idx]
-                # print(ps.shape, cs.shape, ps_target.shape)
-                # torch.Size([5537, 64]) torch.Size([5537, 64]) torch.Size([5537])
-                
-                # plot
-                # if cnt < 7:
-                # if sum([(n in vids[0]) for n in ['04-1', '05-1', '11-2', '13-2', '17-2', '20-1', '21-1']]):
-                #     self._plot(epoch, vids[0], fs, target, dir=self.dir)
-                self._plot(epoch, vids[0], fs, target, dir=self.dir)
-                cnt += 1
-
-                # print(ps.shape, cs.shape)
-                loss = self.model.loss(ps, cs, fs, target.squeeze())
-                # print('loss', loss)
+                loss = 0
+                for p in ps:
+                    loss += self.ce(p.transpose(2, 1).contiguous().view(-1, self.num_classes), batch_target.view(-1))
+                    loss += 0.15 * torch.mean(torch.clamp(
+                        self.mse(F.log_softmax(p[:, :, 1:], dim=1), F.log_softmax(p.detach()[:, :, :-1], dim=1)), min=0,
+                        max=16) * mask[:, :, 1:])
 
                 epoch_loss += loss.item()
                 loss.backward()
                 optimizer.step()
 
-                # _, predicted = torch.max(ps.data[-1], 1)
-                # correct += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1)).sum().item()
-                # total += torch.sum(mask[:, 0, :]).item()
+                _, predicted = torch.max(ps.data[-1], 1)
+                correct += ((predicted == batch_target).float() * mask[:, 0, :].squeeze(1)).sum().item()
+                total += torch.sum(mask[:, 0, :]).item()
             
             
             scheduler.step(epoch_loss)
             batch_gen.reset()
-            print("[epoch %d]: epoch loss = %f" % (epoch + 1, epoch_loss / len(batch_gen.list_of_examples)))
-            with open('./' + self.dir + '/log.txt', mode='a') as f:
-                f.write("[epoch %d]: epoch loss = %f\n" % (epoch + 1, epoch_loss / len(batch_gen.list_of_examples)))
+            print("[epoch %d]: epoch loss = %f,   acc = %f" % (epoch + 1, epoch_loss / len(batch_gen.list_of_examples),
+                                                               float(correct) / total))
 
             if (epoch + 1) % 10 == 0 and batch_gen_tst is not None:
-                # self.test(batch_gen_tst, epoch)
+                self.test(batch_gen_tst, epoch)
                 torch.save(self.model.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".model")
                 torch.save(optimizer.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".opt")
 
@@ -578,7 +396,7 @@ class Trainer:
         self.model.eval()
         with torch.no_grad():
             self.model.to(device)
-            self.model.load_state_dict(torch.load(model_dir + "/epoch-" + str(epoch) + ".model"))
+            self.model.load_state_dict(torch.load(model_dir + "/epoch-" + str(epoch) + ".model", map_location="cpu"))
 
             batch_gen_tst.reset()
             import time
@@ -618,103 +436,6 @@ class Trainer:
                 f_ptr.write(' '.join(recognition))
                 f_ptr.close()
             time_end = time.time()
-    
-    def _plot(self, epoch, vid, features, target, clip_num=16, dir='visualize_base64-16'):
-        if epoch % 3 != 0:
-            return
-        vid = vid.split('.')[0]
-        segment_features = []
-        last_n = 0
-        for n in range(len(target[:-1])):
-            if target[n] != target[n+1]:
-                segment_features.append(features[last_n: n+1])
-                last_n = n + 1
-
-        colors = ['b', 'c', 'g', 'm', 'r', 'y', 'orange', 'darkgray']
-        # r = float(features.norm(dim=1).max() * 1.2)
-        r = 1
-        
-        max_length = 0
-        text_x = []
-        text_y = []
-        text_x_end = []
-        text_y_end = []
-        feature_norm_all = []
-        # single video features
-        for t, feature in enumerate(segment_features):
-            clip_num = 16
-            feature = feature[::max(1, len(feature)//clip_num)].cpu().detach()
-            feature_norm = feature.norm(dim=1)
-            text_x.append(max_length)
-            text_y.append(feature_norm[0])
-            max_length += len(feature_norm)
-            text_x_end.append(max_length-1)
-            text_y_end.append(feature_norm[-1])
-            feature_norm_all += [float(norm) for norm in feature_norm]
-
-            '''plt.figure(figsize=(18, 18))
-            # canvas
-            plt.title('Epoch %d: %s samples' % (epoch, vid))
-            plt.xlim(-r, r)
-            plt.ylim(-r, r)
-
-            # circle
-            circle = plt.Circle((0, 0), r, color="black", fill=False)
-            plt.gcf().gca().add_artist(circle)
-            plt.scatter(0, 0, color='black', marker = 'x')
-
-            for n in range(len(feature)-1):
-                plt.scatter(feature[n][0], feature[n][1], color=colors[t%len(colors)], marker='o')
-                plt.plot([feature[n][0], feature[n+1][0]], [feature[n][1], feature[n+1][1]], color='black')
-            plt.scatter(feature[-1][0], feature[-1][1], color=colors[t%len(colors)], marker='o')
-            # plt.text(feature[0][0], feature[0][1], vid)
-
-            plt.savefig(dir + '/%s_%d_epoch%d.png' % (vid, t, epoch))
-            plt.close()'''
-
-            # # norm
-            # plt.figure(figsize=(18, 4))
-            # plt.title('norm')
-            # plt.plot(feature_norm)
-            # plt.savefig(dir + '/%s_norm%d_epoch%d.png' % (vid, t, epoch))
-            # plt.close()
-        
-        # norm all
-        plt.figure(figsize=(64, 4))
-        plt.title('Norm of all segments')
-        plt.plot(feature_norm_all)
-        for (x, y, norm) in zip(text_x, text_y, range(len(feature_norm_all))):
-            plt.text(x, y, norm+1, fontsize=20)
-        for (x, y, norm) in zip(text_x_end, text_y_end, range(len(feature_norm_all))):
-            plt.text(x-1, y, norm+1, fontsize=20, color='red')
-            # plt.text(x, y, round(norm, 3))
-        plt.grid()
-        print(dir + '/%s_norm_epoch%d.png' % (vid, epoch))
-        plt.savefig(dir + '/%s_norm_epoch%d.png' % (vid, epoch))
-        plt.close()
-        
-        '''# whole
-        # canvas
-        plt.figure(figsize=(18, 18))
-        plt.title('Epoch %d: %s samples' % (epoch, vid))
-        plt.xlim(-r, r)
-        plt.ylim(-r, r)
-
-        # circle
-        circle = plt.Circle((0, 0), r, color="black", fill=False)
-        plt.gcf().gca().add_artist(circle)
-        plt.scatter(0, 0, color='black', marker = 'x')
-
-        for t, feature in enumerate(segment_features):
-            feature = feature[::len(feature)//clip_num].cpu().detach()
-            for n in range(len(feature)-1):
-                plt.scatter(feature[n][0], feature[n][1], color=colors[t%len(colors)], marker='o')
-                plt.plot([feature[n][0], feature[n+1][0]], [feature[n][1], feature[n+1][1]], color='black')
-            plt.scatter(feature[-1][0], feature[-1][1], color=colors[t%len(colors)], marker='o')
-            plt.text(feature[0][0], feature[0][1], str(t))
-        plt.savefig(dir + '/%s_whole_epoch%d.png' % (vid, epoch))
-        plt.close()'''
-
             
             
 

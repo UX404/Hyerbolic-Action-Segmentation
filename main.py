@@ -29,9 +29,11 @@ args = parser.parse_args()
 num_epochs = 120
 
 lr = 0.0005
+# lr = 5e-3
 num_layers = 10
-num_f_maps = 64
+num_f_maps = 512
 features_dim = 2048
+hyp_dim = 512
 bz = 1
 
 channel_mask_rate = 0.3
@@ -81,7 +83,7 @@ for k,v in actions_dict.items():
 num_classes = len(actions_dict)
 
 
-trainer = Trainer(num_layers, 2, 2, num_f_maps, features_dim, num_classes, channel_mask_rate)
+trainer = Trainer(num_layers, 2, 2, num_f_maps, features_dim, hyp_dim, num_classes, channel_mask_rate)
 if args.action == "train":
     batch_gen = BatchGenerator(num_classes, actions_dict, gt_path, features_path, sample_rate)
     batch_gen.read_data(vid_list_file)
